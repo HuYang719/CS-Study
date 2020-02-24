@@ -15,8 +15,7 @@ TCP的运行可以分为三个阶段：连接创建(connection establishment)、
 
 
 ### 什么是三次握手 (three-way handshake)？
-
-![三次握手]
+![三次握手](Pictures/handshake.png)
 
 - 第一次握手：Client将SYN置1，随机产生一个初始序列号seq发送给Server，进入SYN_SENT状态；
 - 第二次握手：Server收到Client的SYN=1之后，知道客户端请求建立连接，将自己的SYN置1，ACK置1，产生一个acknowledge number=sequence number+1，并随机产生一个自己的初始序列号，发送给客户端；进入SYN_RCVD状态；
