@@ -43,4 +43,122 @@ LLVM的提出就是为了改变这样的情况，LLVM现在被广泛用作一种
 
 这里有一些对GCC为什么很难被重新用做库的解释，包括GCC中对全局变量的滥用，没有仔细设计的数据结构，宏的应用等。最难以修复的问题是它最早被设计时产生的内部架构的问题。具体来说，GCC存在layering和抽象泄露(leaky abstractions)的问题：后端需要使用前端的AST来生成debug信息，而前端生成了后端的数据结构，因此整个编译器以来于许多全局结构。
 
-总结：三段式设计有重要的优势，但现实中三种成功实现并没有完全达到当初的目标。其中，GCC已经拥有了尽可能的前后端分离模式的设计，但依然存在前后端的大量耦合，因此给其他开发者的重用带来了极大的不便。
+**总结：三段式设计有重要的优势，但现实中三种成功实现并没有完全达到当初的目标。其中，GCC已经拥有了尽可能的前后端分离模式的设计，但依然存在前后端的大量耦合，因此给其他开发者的重用带来了极大的不便。**
+
+### LLVM的代码表示：LLVM IR
+
+在了解了历史背景后，现在让我们来探究LLVM吧！LLVM最重要的设计就是中间层表示，LLVM Intermediate Representation (IR), 这是一种在编译器中用来代表代码的形式。LLVM IR被设计用于处理中间层的表示和优化器中的转化。它最初设计时有许多特定的目标，包括支持轻量级的运行时优化，过程优化，全代码分析以及强大的重构转换等等。最重要的一个方面是它本身被定义为一流的语言(a first class language)拥有经过很好定义的语义符号。下面用一个例子来具体说明，这一个非常简单的.ll文件的例子：
+
+```
+define i32 @add1(i32 %a, i32 %b) {
+	entry:
+		%tmp1 = add i32 %a, %b
+		ret i32 %tmp1
+}
+
+define i32 @add2(i32 %a, i32 %b) {
+	entry:
+		%tmp1 = icmp eq i32 %a, 0
+		br i1 %tmp1, label %done, label %recurse
+
+	recurse:
+		%tmp2 = sub i32 %a, 1
+		%tmp3 = add i32 %b, 1
+		%tmp4 = call i32 @add2(i32 %tmp2, i32 %tmp3)
+		ret i32 %tmp4
+
+	done:
+		ret i32 %b
+}
+```
+上面这段LLVM IR代码与下面这段C代码相关，都表示了两种不同的整数求和方式：
+
+```C
+unsigned add1(unsigned a, unsigned b) {
+	return a+b;
+}
+
+// Perhaps not the most efficient way to add two numbers.
+unsigned add2(unsigned a, unsigned b) {
+	if(a == 0) return b;
+	return add2(a-1, b+1);
+}
+```
+可以从这个例子中看到，LLVM IR是一种底层类似于RISC的虚拟指令集。和真正的RISC指令集很像，它支持一些简单的线性序列质量例如：加、减、比较、分支。这些指令有三种形式，意味着他们采用一定数量的输入并生成结果放入一个不同的寄存器中。LLVM IR支持labels并且看起来很像一种汇编语言的变体。
+
+与大部分的RISC指令集不同，LLVM强调类型，拥有一种简单的类型系统(例如，i32时一种32bit的整型，i32\*\*是一个指针，指向32bit的整形)，还有一些机器的细节被抽象了。例如calling被抽象为call和ret指令和明确的参数。另一种与机器码明显的不同在于LLVM IR不会使用一个固定的寄存器集合，它可以使用无限的寄存器，用一个%开头表示。
+
+不只是被当作一种语言实现，LLVM IR实际上被定义为三种同构的形式：上述的文本形式，可以被优化器修订的可审查的内存数据格式，一种有效密集型的二进制"bitcode"格式。LLVM项目也提供了工具将从文本格式转为二进制格式：llvm-as汇编文本格式.ll文件为.bc文件，.bc文件包含bitcode编码；而llvm-dis将.bc文件转为.ll文件。
+
+LLVM IR，编译器的中间表示层是非常有意思的，因为它可以为编译器的优化器提供一个完美的世界：不像编译器的前端和后端，优化器不会被一种特定的语言或者架构所约束。另一方面，IR也必须服务好前后端：它必须设计的能够被前端很好的生成，也必须能够足够强大到让优化器针对现实中的架构去优化。
+
+**总结：LLVM IR类似于RISC的虚拟指令，是编译器的中间层表示，服务于优化器。LLVM IR有三种等价形式，并可以相互转化。**
+
+#### 动手写一个LLVM IR优化器
+
+为了让读者对优化器如何工作有一个直观感受，我们一起来看一些例子。这里有许多不同类别的编译器优化器，所以很难提供一个能解决任意问题的方法。不过，大部分的优化器都遵循一个简单的三部分结构：
+- 寻找到需要转化的结构
+- 验证这个转化是否安全以及正确
+- 完成转化，更新代码
+
+最繁琐的优化器是对运算模式的识别，例如：对任意的整数X，X-X是0, X-0是X, (X\*2)-X是X。第一个问题是他们在LLVM IR中是什么样的，这里有一些例子供参考：
+```
+⋮    ⋮    ⋮
+%example1 = sub i32 %a, %a
+⋮    ⋮    ⋮
+%example2 = sub i32 %b, 0
+⋮    ⋮    ⋮
+%tmp = mul i32 %c, 2
+%example3 = sub i32 %tmp, %c
+```
+上面是对转换的简单的展示，LLVM提供了一个指令简化结构用于对其他更多更高等级转换的使用。这些特定的转换在SimplifySubInst函数中，形式如下：
+
+```C
+// X-0 -> X
+if (match(Op1, m_Zero()))
+	return Op0;
+
+// X - X -> 0
+if (Op0 == Op1)
+	return Constant::getNullValue(Op0->getType());
+
+// (X*2) - X -> X
+if(match(Op0, m_Mul(m_Specific(Op1), m_ConstantInt<2>())))
+	return Op1;
+
+...
+
+return 0; // Nothing matched, return null to indicate no transformation. 
+```
+在这个代码中，Op0和Op1都是一个整数相减指令的左右操作符。LLVM用C++执行，尽管C++并不是以模式匹配的能力出名(与一些功能函数语言相比，例如 Objective Caml)，但是它确实提供了一个一般性的系统让我们去实现。函数match()和函数m_允许我们在LLVM IR上执行一些公开的模式匹配运算。例如，m_Specific用于判断乘法左边运算符和Op1是否一致。
+
+这三个例子都是模式匹配，如果匹配上，则函数返回替代的结果，如果没有匹配的则最后返回一个空指针。函数SimplifyInstruction的可以被不同的优化器调用，一个简单的驱使函数类似如下：
+
+```C
+for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E; ++I)
+	if (Value *V = SimplifyInstruction(I))
+		I->replaceAllUsesWith(V);
+```
+这段代码对每一条指令进行简单的循环，检查它们是否可以进行简化。如果可以(因为SimplifyInstruction 返回非空)，它使用replaceAllUsesWith方法来更新代码中的指令，将其转化为更简单的形式。
+
+**总结：LLVM IR优化器中会在SimplifySubInst函数中列出可简化的表达式，SimplifyInstruction用于对每一条指令检测，如果返回非空，则进行替换**
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
