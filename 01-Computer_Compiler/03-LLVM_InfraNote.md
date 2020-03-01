@@ -48,6 +48,10 @@ LLVM将代码翻译成x86平台，有以下几步：
 
 上述LLVM命令 (clang, llc, llvm-dis)都能从 /unsup文件中获取
 
+### Project开发中parser章节不好理解？
+[建议参考下中文翻译](https://llvm-tutorial-cn.readthedocs.io/en/latest/chapter-2.html)
+有一些作者自己的理解可以对读者有所启发，最终的代码也经过了改良
+
 ## LLVM架构问题
 
 ### LLVM与Clang的关系？
